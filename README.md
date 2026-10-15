@@ -10,13 +10,11 @@ Une extension Cinnamon ajoute au menu Réseau :
 ## Prérequis
 
 - Linux Mint Cinnamon (testé avec Cinnamon 6.6), NetworkManager, `iw`, polkit (`pkexec`).
-- Une carte WiFi capable d'être client et point d'accès en même temps. Vérifier avec :
+- Une carte WiFi capable d'être client et point d'accès en même temps. C'est vérifié automatiquement par `install.sh` (qui s'arrête sinon) et à chaque allumage depuis l'extension (qui affiche alors l'erreur). Pour vérifier à la main :
 
   ```bash
-  iw list | grep -A4 'valid interface combinations'
+  ./mint-hotspot check
   ```
-
-  Il faut une combinaison qui contient à la fois `managed` et `AP`.
 
 ## Installation
 
@@ -47,7 +45,7 @@ pkexec /usr/local/libexec/mint-hotspot down  # éteindre
 
 ## Fonctionnement
 
-- `mint-hotspot` (lancé en root via `pkexec`, n'accepte que `up` ou `down`) crée `ap0` avec une adresse MAC dérivée de la carte, puis active la connexion NetworkManager `mint-hotspot` (mode AP, WPA2, partage IPv4).
+- `mint-hotspot` (lancé en root via `pkexec`, n'accepte que `up`, `down` ou `check`) vérifie la carte, crée `ap0` avec une adresse MAC dérivée de la carte, puis active la connexion NetworkManager `mint-hotspot` (mode AP, WPA2, partage IPv4).
 - Le point d'accès prend le canal de la connexion WiFi en cours (bande 2,4 GHz). Si la box est en 5 GHz, il utilise le canal 6.
 - L'extension masque `ap0` de la liste des cartes WiFi du menu Réseau, pour qu'on ne la connecte pas par erreur à un réseau.
 

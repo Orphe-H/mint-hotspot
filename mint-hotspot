@@ -1,0 +1,49 @@
+#!/bin/bash
+# Point d'accès WiFi sur une interface virtuelle, sans couper la connexion WiFi en cours.
+# Lancé en root via pkexec : n'accepte que "up" ou "down", aucune autre entrée.
+CON=mint-hotspot
+AP=ap0
+
+case "${1:-}" in
+up)
+    STA=$(iw dev | awk -v ap="$AP" '/Interface/ {i = $2} /type managed/ && i != ap {print i; exit}')
+    [ -n "$STA" ] || { echo "Aucune interface WiFi trouvée" >&2; exit 1; }
+
+    # ponytail: canal figé au démarrage ; si la box change de canal en 2,4 GHz, éteindre/rallumer.
+    # Hors 2,4 GHz 1-11 (box en 5 GHz) : 6, car en région 00 seul 1-11 autorise un AP.
+    CH=$(iw dev "$STA" info | awk '/channel/ {print $2; exit}')
+    [[ "$CH" =~ ^([1-9]|1[01])$ ]] || CH=6
+
+    # mac80211 refuse de monter un AP qui a la même MAC que la station (ENOTUNIQ).
+    MAC=$(cat "/sys/class/net/$STA/address")
+    MAC=$(printf '%02x%s' $((0x${MAC:0:2} ^ 2)) "${MAC:2}")
+    iw dev "$AP" info >/dev/null 2>&1 || iw dev "$STA" interface add "$AP" type __ap addr "$MAC" || exit 1
+
+    if ! nmcli con show "$CON" >/dev/null 2>&1; then
+        PSK=$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 12)
+        nmcli con add type wifi ifname "$AP" con-name "$CON" autoconnect no mode ap ssid "$(hostname)-hotspot" \
+            802-11-wireless.band bg ipv4.method shared \
+            wifi-sec.key-mgmt wpa-psk wifi-sec.proto rsn wifi-sec.pairwise ccmp wifi-sec.group ccmp \
+            wifi-sec.psk "$PSK" >/dev/null || exit 1
+    fi
+    nmcli con modify "$CON" 802-11-wireless.channel "$CH"
+
+    # NM met un instant à détecter la nouvelle interface.
+    for _ in 1 2 3 4 5; do
+        ERR=$(nmcli con up "$CON" 2>&1 >/dev/null) && exit 0
+        sleep 1
+    done
+    iw dev "$AP" del
+    echo "$ERR" >&2
+    exit 1
+    ;;
+down)
+    nmcli con down "$CON" >/dev/null 2>&1
+    iw dev "$AP" del 2>/dev/null
+    exit 0
+    ;;
+*)
+    echo "usage: $0 up|down" >&2
+    exit 2
+    ;;
+esac

@@ -59,11 +59,10 @@ pkexec /usr/local/libexec/mint-hotspot down  # éteindre
 ## Désinstallation
 
 ```bash
-pkexec /usr/local/libexec/mint-hotspot down
-nmcli con delete mint-hotspot
-rm ~/.local/share/cinnamon/extensions/mint-hotspot@bobby
-sudo rm /usr/local/libexec/mint-hotspot /usr/share/polkit-1/actions/net.minthotspot.policy
+./uninstall.sh
 ```
+
+Le script désactive l'extension, éteint le point d'accès, supprime la connexion NetworkManager `mint-hotspot`, puis retire le lien de l'extension, le script root et la règle polkit (demande `sudo`).
 
 ## Licence
 

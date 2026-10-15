@@ -10,7 +10,7 @@ Une extension Cinnamon ajoute au menu Réseau :
 ## Prérequis
 
 - Linux Mint Cinnamon (testé avec Cinnamon 6.6), NetworkManager, `iw`, polkit (`pkexec`).
-- Une carte WiFi capable d'être client et point d'accès en même temps. C'est vérifié automatiquement par `install.sh` (qui s'arrête sinon) et à chaque allumage depuis l'extension (qui affiche alors l'erreur). Pour vérifier à la main :
+- Une carte WiFi capable d'être client et point d'accès en même temps. C'est vérifié automatiquement par `install.sh` (qui s'arrête sinon) et à chaque allumage depuis l'extension. En cas d'échec, Cinnamon affiche une notification. Pour vérifier à la main :
 
   ```bash
   ./mint-hotspot check

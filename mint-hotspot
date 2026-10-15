@@ -20,7 +20,7 @@ up)
     iw dev "$AP" info >/dev/null 2>&1 || iw dev "$STA" interface add "$AP" type __ap addr "$MAC" || exit 1
 
     if ! nmcli con show "$CON" >/dev/null 2>&1; then
-        PSK=$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 12)
+        PSK=$(tr -dc 'a-zA-Z0-9' </dev/urandom 2>/dev/null | head -c 12)
         nmcli con add type wifi ifname "$AP" con-name "$CON" autoconnect no mode ap ssid "$(hostname)-hotspot" \
             802-11-wireless.band bg ipv4.method shared \
             wifi-sec.key-mgmt wpa-psk wifi-sec.proto rsn wifi-sec.pairwise ccmp wifi-sec.group ccmp \

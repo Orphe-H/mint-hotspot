@@ -1,0 +1,6 @@
+{
+    "uuid": "mint-hotspot@bobby",
+    "name": "Point d'accès WiFi",
+    "description": "Ajoute un interrupteur de point d'accès au menu réseau, sans couper la connexion WiFi.",
+    "cinnamon-version": ["6.0"]
+}

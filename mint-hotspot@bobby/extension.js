@@ -6,9 +6,10 @@ const PopupMenu = imports.ui.popupMenu;
 const AppletManager = imports.ui.appletManager;
 
 const CON = 'mint-hotspot';
+const AP = 'ap0';
 const HELPER = '/usr/local/libexec/mint-hotspot';
 
-let client = null, clientSignals = [], timerId = 0, items = [], toggle = null, info = null;
+let applet = null, client = null, clientSignals = [], timerId = 0, items = [], toggle = null, info = null;
 
 function run(argv, callback) {
     let proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
@@ -32,10 +33,16 @@ function refresh() {
     });
 }
 
+// L'applet affiche ap0 comme une deuxième carte WiFi (interrupteur + réseaux), ce qui permet de couper le point
+// d'accès ou de connecter ap0 à un réseau : on la retire avec son propre _deviceRemoved, qui remet _delegate à null.
+function hideAp(c, device) {
+    if (device && device.get_iface() === AP && device._delegate) applet._deviceRemoved(c, device);
+}
+
 // Applets et extensions sont chargés en parallèle : on réessaie jusqu'à ce que l'applet ait construit son menu,
 // ce qu'il fait d'un bloc dès qu'il a son client NM.
 function attach() {
-    let applet = AppletManager.getRunningInstancesForUuid('network@cinnamon.org')[0];
+    applet = AppletManager.getRunningInstancesForUuid('network@cinnamon.org')[0];
     if (!applet || !applet._client) return GLib.SOURCE_CONTINUE;
     timerId = 0;
 
@@ -53,6 +60,8 @@ function attach() {
         });
     });
     clientSignals = ['active-connection-added', 'active-connection-removed'].map(s => client.connect(s, refresh));
+    clientSignals.push(client.connect('device-added', hideAp)); // connecté après l'applet, donc appelé après lui
+    hideAp(client, client.get_device_by_iface(AP));
     refresh();
     return GLib.SOURCE_REMOVE;
 }
@@ -68,7 +77,7 @@ function disable() {
     timerId = 0;
     clientSignals.forEach(id => client.disconnect(id));
     clientSignals = [];
-    client = null;
+    applet = client = null;
     items.forEach(item => item.destroy());
     items = [];
     toggle = info = null;

@@ -29,8 +29,9 @@ up)
     nmcli con modify "$CON" 802-11-wireless.channel "$CH"
 
     # NM met un instant à détecter la nouvelle interface.
+    # autoconnect no : si le point d'accès tombe autrement que par "down", ap0 ne se connecte à aucun réseau.
     for _ in 1 2 3 4 5; do
-        ERR=$(nmcli con up "$CON" 2>&1 >/dev/null) && exit 0
+        ERR=$(nmcli con up "$CON" 2>&1 >/dev/null) && { nmcli dev set "$AP" autoconnect no; exit 0; }
         sleep 1
     done
     iw dev "$AP" del

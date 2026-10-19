@@ -3,6 +3,28 @@
 # Lancé en root via pkexec : n'accepte que "up", "down" ou "check" (lecture seule, sans root), aucune autre entrée.
 CON=mint-hotspot
 AP=ap0
+IFB=mhifb
+CONF=/etc/mint-hotspot.conf
+PIDFILE=/run/mint-hotspot-shaper.pid
+
+# Valeurs par défaut du plafonnement adaptatif (kbit/s), surchargeables par /etc/mint-hotspot.conf (détenu root).
+SHAPER=1
+DOWN_MAX=50000
+UP_MAX=10000
+DOWN_MIN=1000
+UP_MIN=1000
+PING_TARGET=1.1.1.1
+RTT_OFFSET_MS=50
+INTERVAL=2
+STEP_DOWN=75
+STEP_UP=115
+OK_CYCLES=5
+CONG_CYCLES=30
+
+if [ -f "$CONF" ] && [ -O "$CONF" ]; then
+    # shellcheck source=/dev/null
+    . "$CONF"
+fi
 
 # Trouve la carte WiFi (STA) et vérifie qu'elle accepte une station et un point d'accès en même temps :
 # une des « valid interface combinations » de iw doit contenir managed et AP, avec au moins 2 interfaces.
@@ -21,6 +43,82 @@ check() {
     # En root (pkexec depuis l'extension), pas d'accès au bus de session : c'est l'extension qui notifie.
     [ "$EUID" -eq 0 ] || notify-send -i dialog-error "Point d'accès" "$MSG" 2>/dev/null || true
     return 1
+}
+
+# Ajuste les plafonds (kbit/s) des deux sens : ap0 egress = vers les clients, mhifb = envoi des clients.
+# quantum 1514 (~MTU) : sinon le kernel avertit "quantum is big" vu r2q=10 par défaut.
+shaper_apply() {
+    tc class replace dev "$AP" parent 1: classid 1:10 htb rate "${1}kbit" ceil "${1}kbit" quantum 1514
+    tc class replace dev "$IFB" parent 1: classid 1:10 htb rate "${2}kbit" ceil "${2}kbit" quantum 1514
+}
+
+# Boucle adaptative : on ne réduit le débit des clients que si la latence de l'ordinateur se dégrade,
+# on le remonte au calme ; si la congestion persiste au plancher (changement de route, VPN), on recalage le minimum.
+shaper_loop() {
+    local down=$1 up=$2 best='' rtt ok=0 cong=0 nd nu
+    while :; do
+        rtt=$(ping -n -c1 -W1 "$PING_TARGET" 2>/dev/null | awk -F'time=' 'NF > 1 {printf "%d", $2}')
+        if [ -n "$rtt" ]; then
+            [ -z "$best" ] && best=$rtt
+            if [ "$rtt" -gt $((best + RTT_OFFSET_MS)) ]; then
+                cong=$((cong + 1)); ok=0
+                if [ "$down" -le "$DOWN_MIN" ] && [ "$up" -le "$UP_MIN" ]; then
+                    [ "$cong" -ge "$CONG_CYCLES" ] && { best=$rtt; cong=0; }
+                else
+                    down=$((down * STEP_DOWN / 100)); [ "$down" -lt "$DOWN_MIN" ] && down=$DOWN_MIN
+                    up=$((up * STEP_DOWN / 100)); [ "$up" -lt "$UP_MIN" ] && up=$UP_MIN
+                    shaper_apply "$down" "$up"
+                    logger -t mint-hotspot "congestion (rtt ${rtt} ms) : plafonds ${down}kbit/s vers les clients, ${up}kbit/s en envoi"
+                fi
+            else
+                cong=0; ok=$((ok + 1))
+                if [ "$ok" -ge "$OK_CYCLES" ]; then
+                    ok=0
+                    nd=$((down * STEP_UP / 100)); [ "$nd" -gt "$DOWN_MAX" ] && nd=$DOWN_MAX
+                    nu=$((up * STEP_UP / 100)); [ "$nu" -gt "$UP_MAX" ] && nu=$UP_MAX
+                    if [ "$nd" -gt "$down" ] || [ "$nu" -gt "$up" ]; then
+                        down=$nd; up=$nu
+                        shaper_apply "$down" "$up"
+                        logger -t mint-hotspot "latence normale : plafonds ${down}kbit/s vers les clients, ${up}kbit/s en envoi"
+                    fi
+                fi
+            fi
+        fi
+        sleep "$INTERVAL"
+    done
+}
+
+# Arrête le shaper : daemon, qdiscs sur ap0, interface ifb.
+shaper_stop() {
+    local pid
+    if [ -r "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE" 2>/dev/null)
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null
+        rm -f "$PIDFILE"
+    fi
+    tc qdisc del dev "$AP" root 2>/dev/null
+    tc qdisc del dev "$AP" ingress 2>/dev/null
+    ip link del "$IFB" 2>/dev/null
+}
+
+# HTB + fq_codel dans les deux sens : le trafic de l'ordinateur (wlo1) n'est jamais touché.
+shaper_start() {
+    [ "$SHAPER" = 0 ] && return 0
+
+    ip link add "$IFB" type ifb 2>/dev/null
+    ip link set "$IFB" up || return 1
+    tc qdisc replace dev "$AP" root handle 1: htb default 10
+    tc class replace dev "$AP" parent 1: classid 1:10 htb rate "${DOWN_MAX}kbit" ceil "${DOWN_MAX}kbit" quantum 1514
+    tc qdisc replace dev "$AP" parent 1:10 fq_codel
+    tc qdisc replace dev "$AP" handle ffff: ingress
+    tc filter replace dev "$AP" parent ffff: protocol all matchall action mirred egress redirect dev "$IFB"
+    tc qdisc replace dev "$IFB" root handle 1: htb default 10
+    tc class replace dev "$IFB" parent 1: classid 1:10 htb rate "${UP_MAX}kbit" ceil "${UP_MAX}kbit" quantum 1514
+    tc qdisc replace dev "$IFB" parent 1:10 fq_codel
+
+    shaper_loop "$DOWN_MAX" "$UP_MAX" </dev/null >/dev/null 2>&1 &
+    echo $! >"$PIDFILE"
+    logger -t mint-hotspot "shaper actif : plafonds ${DOWN_MAX}kbit/s vers les clients, ${UP_MAX}kbit/s en envoi"
 }
 
 case "${1:-}" in
@@ -52,14 +150,21 @@ up)
     # NM met un instant à détecter la nouvelle interface.
     # autoconnect no : si le point d'accès tombe autrement que par "down", ap0 ne se connecte à aucun réseau.
     for _ in 1 2 3 4 5; do
-        ERR=$(nmcli con up "$CON" 2>&1 >/dev/null) && { nmcli dev set "$AP" autoconnect no; exit 0; }
+        ERR=$(nmcli con up "$CON" 2>&1 >/dev/null) && {
+            nmcli dev set "$AP" autoconnect no
+            shaper_stop
+            shaper_start
+            exit 0
+        }
         sleep 1
     done
+    shaper_stop
     iw dev "$AP" del
     echo "$ERR" >&2
     exit 1
     ;;
 down)
+    shaper_stop
     nmcli con down "$CON" >/dev/null 2>&1
     iw dev "$AP" del 2>/dev/null
     exit 0

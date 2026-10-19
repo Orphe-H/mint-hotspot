@@ -32,6 +32,7 @@ Activez ensuite l'extension dans **Paramètres système > Extensions**.
 ## Utilisation
 
 - **Allumer / éteindre** : interrupteur « Point d'accès » dans le menu Réseau. Pas de mot de passe demandé pour la session active.
+- **Extinction automatique** : le point d'accès s'éteint après 2 minutes sans aucun appareil connecté, avec notification Cinnamon et entrée dans `journalctl -t mint-hotspot` (délai modifiable, voir plus bas).
 - **Modifier le SSID ou le mot de passe** : cliquer sur la ligne `SSID : …`. Elle apparaît après le premier allumage, qui crée la connexion. Le mot de passe doit faire 8 à 63 caractères. Si le point d'accès est allumé, il redémarre pour appliquer les changements.
 
 Au premier allumage, le SSID est `<nom-de-la-machine>-hotspot` et le mot de passe est généré aléatoirement.
@@ -42,7 +43,7 @@ Pour que les appareils connectés ne saturent pas la connexion de l'ordinateur, 
 
 - plafond de départ : 50 Mbit/s vers les clients et 10 Mbit/s en envoi ;
 - une boucle d'arrière-plan mesure la latence de l'ordinateur (`ping` vers `1.1.1.1`) toutes les 2 s : si elle augmente de plus de 50 ms au-dessus du minimum observé, les plafonds sont baissés ; ils remontent progressivement au calme ;
-- chaque ajustement est journalisé : `journalctl -t mint-hotspot` (le daemon est identifié par `/run/mint-hotspot-shaper.pid`, son nom de processus reste celui du script).
+- chaque ajustement est journalisé : `journalctl -t mint-hotspot` (le daemon est identifié par `/run/mint-hotspot-shaper.pid`, le daemon de veille par `/run/mint-hotspot-idle.pid`, leur nom de processus reste celui du script).
 
 Les valeurs par défaut sont codées en tête de `mint-hotspot`, surchargeables par un fichier `/etc/mint-hotspot.conf` (détenu par root, ignoré sinon) :
 
@@ -55,6 +56,9 @@ PING_TARGET=1.1.1.1
 RTT_OFFSET_MS=50
 INTERVAL=2       # période de mesure, s
 SHAPER=0         # désactive entièrement la limitation
+IDLE=0           # désactive l'extinction automatique
+IDLE_TIMEOUT=120 # s sans appareil connecté avant extinction
+IDLE_INTERVAL=5  # période de sonde des appareils connectés, s
 ```
 
 En ligne de commande :
@@ -69,6 +73,7 @@ pkexec /usr/local/libexec/mint-hotspot down  # éteindre
 - `mint-hotspot` (lancé en root via `pkexec`, n'accepte que `up`, `down` ou `check`) vérifie la carte, crée `ap0` avec une adresse MAC dérivée de la carte, puis active la connexion NetworkManager `mint-hotspot` (mode AP, WPA2, partage IPv4).
 - Le point d'accès prend le canal de la connexion WiFi en cours (bande 2,4 GHz). Si la box est en 5 GHz, il utilise le canal 6.
 - Tant qu'il est allumé, un shaper `tc` (HTB + fq_codel) plafonne le débit des appareils connectés dans les deux sens, avec réduction automatique selon la latence de l'ordinateur (voir « Limite de débit »). Le trafic de l'ordinateur lui-même n'est jamais limité.
+- Un daemon de veille compte les appareils associés (`iw dev ap0 station dump`) ; après `IDLE_TIMEOUT` s sans aucun, il éteint le point d'accès et notifie (journal + Cinnamon).
 - L'extension masque `ap0` de la liste des cartes WiFi du menu Réseau, pour qu'on ne la connecte pas par erreur à un réseau.
 
 ## Limites

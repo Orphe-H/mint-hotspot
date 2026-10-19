@@ -15,7 +15,7 @@ const AP = 'ap0';
 const HELPER = '/usr/local/libexec/mint-hotspot';
 
 let applet = null, client = null, clientSignals = [], timerId = 0, items = [], toggle = null, info = null;
-let current = [], dialog = null;
+let current = [], dialog = null, userAction = false;
 
 function run(argv, callback) {
     let proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
@@ -28,6 +28,7 @@ function run(argv, callback) {
 function helper(arg) {
     run(['pkexec', HELPER, arg], (ok, out, err) => {
         if (!ok) Main.notifyError("Point d'accès", err.trim());
+        userAction = false; // action terminée : une future extinction est automatique
         refresh();
     });
 }
@@ -72,8 +73,10 @@ function edit() {
             if (dialog !== d) return; // fermée ou extension désactivée entre-temps
             if (!ok) { error.text = err.trim(); return; }
             closeDialog();
-            if (toggle.state) helper('up'); // relance la connexion pour appliquer
-            else refresh();
+            if (toggle.state) { // relance la connexion pour appliquer
+                userAction = true;
+                helper('up');
+            } else refresh();
         });
     };
     [ssidEntry, pskEntry].forEach(e => e.clutter_text.connect('activate', save));
@@ -91,6 +94,14 @@ function hideAp(c, device) {
     if (device && device.get_iface() === AP && device._delegate) applet._deviceRemoved(c, device);
 }
 
+// Extinction automatique (daemon veille) vs manuelle : l'interrupteur est encore à l'ancien état à ce stade.
+function activeRemoved(c, activeConn) {
+    if (activeConn.get_id() === CON && toggle.state && !userAction)
+        Main.notify("Point d'accès", "Éteint automatiquement : aucun appareil connecté");
+    userAction = false;
+    refresh();
+}
+
 // Applets et extensions sont chargés en parallèle : on réessaie jusqu'à ce que l'applet ait construit son menu,
 // ce qu'il fait d'un bloc dès qu'il a son client NM.
 function attach() {
@@ -105,9 +116,15 @@ function attach() {
     let pos = applet.menu.numMenuItems - 2; // avant « Paramètres réseau » et « Connexions réseau »
     items.forEach((item, i) => applet.menu.addMenuItem(item, pos + i));
 
-    toggle.connect('toggled', (item, state) => helper(state ? 'up' : 'down'));
+    toggle.connect('toggled', (item, state) => {
+        userAction = true;
+        helper(state ? 'up' : 'down');
+    });
     info.connect('activate', edit);
-    clientSignals = ['active-connection-added', 'active-connection-removed'].map(s => client.connect(s, refresh));
+    clientSignals = [
+        client.connect('active-connection-added', refresh),
+        client.connect('active-connection-removed', activeRemoved),
+    ];
     clientSignals.push(client.connect('device-added', hideAp)); // connecté après l'applet, donc appelé après lui
     hideAp(client, client.get_device_by_iface(AP));
     refresh();
@@ -131,4 +148,5 @@ function disable() {
     items = [];
     toggle = info = null;
     current = [];
+    userAction = false;
 }

@@ -6,6 +6,13 @@ AP=ap0
 IFB=mhifb
 CONF=/etc/mint-hotspot.conf
 PIDFILE=/run/mint-hotspot-shaper.pid
+PIDFILE_IDLE=/run/mint-hotspot-idle.pid
+
+# Extinction automatique : sans aucun appareil associé pendant IDLE_TIMEOUT s, le point d'accès s'éteint.
+# Valeurs par défaut, surchargeables par /etc/mint-hotspot.conf (détenu root).
+IDLE=1
+IDLE_TIMEOUT=120
+IDLE_INTERVAL=5
 
 # Valeurs par défaut du plafonnement adaptatif (kbit/s), surchargeables par /etc/mint-hotspot.conf (détenu root).
 SHAPER=1
@@ -121,6 +128,51 @@ shaper_start() {
     logger -t mint-hotspot "shaper actif : plafonds ${DOWN_MAX}kbit/s vers les clients, ${UP_MAX}kbit/s en envoi"
 }
 
+# Éteint le point d'accès : shaper, connexion NetworkManager, interface virtuelle.
+ap_down() {
+    shaper_stop
+    nmcli con down "$CON" >/dev/null 2>&1
+    iw dev "$AP" del 2>/dev/null
+}
+
+idle_stop() {
+    local pid
+    if [ -r "$PIDFILE_IDLE" ]; then
+        pid=$(cat "$PIDFILE_IDLE" 2>/dev/null)
+        # Pas soi-même : le daemon s'arrête après avoir éteint le point d'accès.
+        [ -n "$pid" ] && [ "$pid" != "$$" ] && kill "$pid" 2>/dev/null
+        rm -f "$PIDFILE_IDLE"
+    fi
+}
+
+# La veille s'appuie sur les stations associées (iw), que NetworkManager ne suit pas en mode AP :
+# un client en veille ou en cours d'association compte et remet le compteur à zéro.
+idle_loop() {
+    local last now n
+    last=$(date +%s)
+    while :; do
+        n=$(iw dev "$AP" station dump 2>/dev/null | grep -c '^Station ')
+        now=$(date +%s)
+        if [ "$n" -gt 0 ]; then
+            last=$now
+        elif [ $((now - last)) -ge "$IDLE_TIMEOUT" ]; then
+            logger -t mint-hotspot "aucun appareil connecté depuis ${IDLE_TIMEOUT}s : extinction automatique"
+            rm -f "$PIDFILE_IDLE"
+            ap_down
+            exit 0
+        fi
+        sleep "$IDLE_INTERVAL"
+    done
+}
+
+idle_start() {
+    [ "$IDLE" = 0 ] && return 0
+
+    idle_loop </dev/null >/dev/null 2>&1 &
+    echo $! >"$PIDFILE_IDLE"
+    logger -t mint-hotspot "veille active : extinction après ${IDLE_TIMEOUT}s sans appareil connecté"
+}
+
 case "${1:-}" in
 check)
     check && echo "OK : la carte WiFi $STA peut partager sa connexion"
@@ -154,6 +206,8 @@ up)
             nmcli dev set "$AP" autoconnect no
             shaper_stop
             shaper_start
+            idle_stop
+            idle_start
             exit 0
         }
         sleep 1
@@ -164,9 +218,8 @@ up)
     exit 1
     ;;
 down)
-    shaper_stop
-    nmcli con down "$CON" >/dev/null 2>&1
-    iw dev "$AP" del 2>/dev/null
+    idle_stop
+    ap_down
     exit 0
     ;;
 *)

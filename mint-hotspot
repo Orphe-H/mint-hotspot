@@ -2,12 +2,21 @@
 # Point d'accès WiFi sur une interface virtuelle, sans couper la connexion WiFi en cours.
 # Lancé via pkexec : n'accepte que "up", "down", "check" ou "list" ; "check" et "list" sont en lecture seule
 # et fonctionnent sans root ("list" perd alors les noms d'hôte, dans les bails DHCP racine-only).
-CON=mint-hotspot
-AP=ap0
-IFB=mhifb
-CONF=/etc/mint-hotspot.conf
-PIDFILE=/run/mint-hotspot-shaper.pid
-PIDFILE_IDLE=/run/mint-hotspot-idle.pid
+CON=${MINT_HOTSPOT_CON:-mint-hotspot}
+AP=${MINT_HOTSPOT_AP:-ap0}
+IFB=${MINT_HOTSPOT_IFB:-mhifb}
+CONF=${MINT_HOTSPOT_CONF:-/etc/mint-hotspot.conf}
+PIDFILE=${MINT_HOTSPOT_PIDFILE:-/run/mint-hotspot-shaper.pid}
+PIDFILE_IDLE=${MINT_HOTSPOT_PIDFILE_IDLE:-/run/mint-hotspot-idle.pid}
+
+# Fichiers de données, surchargeables pour les tests (fixtures locales).
+LEASES_GLOB=${MINT_HOTSPOT_LEASES_GLOB:-/var/lib/NetworkManager/dnsmasq-*.leases}
+OUI_DB=${MINT_HOTSPOT_OUI_DB:-/usr/share/ieee-data/oui.txt}
+SYSFS_NET=${MINT_HOTSPOT_SYSFS_NET:-/sys/class/net}
+
+# Budgets d'itérations des boucles (vide = infini), pour les tests.
+SHAPER_MAX_ITER=${MINT_HOTSPOT_SHAPER_MAX_ITER:-}
+IDLE_MAX_ITER=${MINT_HOTSPOT_IDLE_MAX_ITER:-}
 
 # Extinction automatique : sans aucun appareil associé pendant IDLE_TIMEOUT s, le point d'accès s'éteint.
 # Valeurs par défaut, surchargeables par /etc/mint-hotspot.conf (détenu root).
@@ -40,7 +49,7 @@ check() {
     STA=$(iw dev | awk -v ap="$AP" '/Interface/ {i = $2} /type managed/ && i != ap {print i; exit}')
     if [ -z "$STA" ]; then
         MSG="Aucune interface WiFi trouvée"
-    elif iw phy "$(cat "/sys/class/net/$STA/phy80211/name")" info |
+    elif iw phy "$(cat "$SYSFS_NET/$STA/phy80211/name")" info |
         sed -n '/valid interface combinations/,/^\t[^\t]/p' | tr -d '\n' | tr '*' '\n' |
         grep ' managed[ ,]' | grep ' AP[ ,]' | grep -qE 'total <= ([2-9]|[0-9]{2,})'; then
         return
@@ -63,8 +72,10 @@ shaper_apply() {
 # Boucle adaptative : on ne réduit le débit des clients que si la latence de l'ordinateur se dégrade,
 # on le remonte au calme ; si la congestion persiste au plancher (changement de route, VPN), on recalage le minimum.
 shaper_loop() {
-    local down=$1 up=$2 best='' rtt ok=0 cong=0 nd nu
+    local down=$1 up=$2 best='' rtt ok=0 cong=0 nd nu iter=0
     while :; do
+        [ -n "$SHAPER_MAX_ITER" ] && [ "$iter" -ge "$SHAPER_MAX_ITER" ] && return 0
+        iter=$((iter + 1))
         rtt=$(ping -n -c1 -W1 "$PING_TARGET" 2>/dev/null | awk -F'time=' 'NF > 1 {printf "%d", $2}')
         if [ -n "$rtt" ]; then
             [ -z "$best" ] && best=$rtt
@@ -149,9 +160,11 @@ idle_stop() {
 # La veille s'appuie sur les stations associées (iw), que NetworkManager ne suit pas en mode AP :
 # un client en veille ou en cours d'association compte et remet le compteur à zéro.
 idle_loop() {
-    local last now n
+    local last now n iter=0
     last=$(date +%s)
     while :; do
+        [ -n "$IDLE_MAX_ITER" ] && [ "$iter" -ge "$IDLE_MAX_ITER" ] && return 0
+        iter=$((iter + 1))
         n=$(iw dev "$AP" station dump 2>/dev/null | grep -c '^Station ')
         now=$(date +%s)
         if [ "$n" -gt 0 ]; then
@@ -196,7 +209,7 @@ oui_name() {
         for (i = 3; i <= NF; i++) printf "%s%s", $i, (i < NF ? " " : "")
         print ""
         exit
-    }' /usr/share/ieee-data/oui.txt 2>/dev/null
+    }' "$OUI_DB" 2>/dev/null
 }
 
 # Liste les appareils connectés : IP, MAC, durée d'association, nom d'hôte et fabricant.
@@ -218,7 +231,8 @@ list() {
 
     # Bails DHCP : mac -> ip, mac -> nom d'hôte.
     local -A ipmap=() hostmap=() f
-    for f in /var/lib/NetworkManager/dnsmasq-*.leases; do
+    # shellcheck disable=SC2086 # $LEASES_GLOB est un motif glob, doit s'étendre
+    for f in $LEASES_GLOB; do
         [ -r "$f" ] || continue
         while read -r _ mac ip host _; do
             mac=${mac,,}
@@ -268,6 +282,12 @@ list() {
     fi
 }
 
+# Sourcing sans exécution (tests unitaires) : MINT_HOTSPOT_SOURCED=1.
+if [ -n "${MINT_HOTSPOT_SOURCED:-}" ]; then
+    # shellcheck disable=SC2317 # return n'est reachable que si sourced ; || true sinon (exécution directe).
+    return 0 2>/dev/null || true
+fi
+
 case "${1:-}" in
 check)
     check && echo "OK : la carte WiFi $STA peut partager sa connexion"
@@ -281,7 +301,7 @@ up)
     [[ "$CH" =~ ^([1-9]|1[01])$ ]] || CH=6
 
     # mac80211 refuse de monter un AP qui a la même MAC que la station (ENOTUNIQ).
-    MAC=$(cat "/sys/class/net/$STA/address")
+    MAC=$(cat "$SYSFS_NET/$STA/address")
     MAC=$(printf '%02x%s' $((0x${MAC:0:2} ^ 2)) "${MAC:2}")
     iw dev "$AP" info >/dev/null 2>&1 || iw dev "$STA" interface add "$AP" type __ap addr "$MAC" || exit 1
 

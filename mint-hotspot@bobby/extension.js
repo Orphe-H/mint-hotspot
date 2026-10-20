@@ -249,3 +249,36 @@ function disable() {
     current = [];
     userAction = false;
 }
+
+// Export conditionnel : `module` est indéfini sous GJS, présent sous Node/Jest.
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        CON, AP, HELPER,
+        fmtDur, devicesText,
+        run, helper, refresh, edit,
+        listDevices, refreshDevices, openDevices, closeDevices, closeDialog,
+        hideAp, activeRemoved, attach, init, enable, disable,
+        get state() {
+            return {
+                applet, client, clientSignals, timerId, items, toggle, info,
+                devices, devDialog, devTimer, menuSignal, current, dialog, userAction,
+            };
+        },
+        setState(patch) {
+            if ('applet' in patch) applet = patch.applet;
+            if ('client' in patch) client = patch.client;
+            if ('clientSignals' in patch) clientSignals = patch.clientSignals;
+            if ('timerId' in patch) timerId = patch.timerId;
+            if ('items' in patch) items = patch.items;
+            if ('toggle' in patch) toggle = patch.toggle;
+            if ('info' in patch) info = patch.info;
+            if ('devices' in patch) devices = patch.devices;
+            if ('devDialog' in patch) devDialog = patch.devDialog;
+            if ('devTimer' in patch) devTimer = patch.devTimer;
+            if ('menuSignal' in patch) menuSignal = patch.menuSignal;
+            if ('current' in patch) current = patch.current;
+            if ('dialog' in patch) dialog = patch.dialog;
+            if ('userAction' in patch) userAction = patch.userAction;
+        },
+    };
+}

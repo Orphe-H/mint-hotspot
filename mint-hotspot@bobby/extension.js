@@ -103,10 +103,10 @@ function fmtDur(s) {
 function devicesText(list) {
     if (!list.length) return 'Aucun appareil connecté.';
     const pad = (s, n) => s.padEnd(n);
-    const lines = [pad('IP', 16) + pad('MAC', 18) + pad('Durée', 8) + pad('Nom', 19) + 'Fabricant'];
+    const lines = [pad('Nom', 25) + pad('IP', 16) + pad('Durée', 9) + pad('MAC', 18) + 'Fabricant'];
     list.forEach(d => lines.push(
-        pad(d.ip || '-', 16) + pad(d.mac || '-', 18) + pad(fmtDur(d.seconds), 8) +
-        pad((d.hostname || '-').slice(0, 18), 19) + (d.vendor || '-').slice(0, 28)));
+        pad((d.hostname || '-').slice(0, 24), 25) + pad(d.ip || '-', 16) + pad(fmtDur(d.seconds), 9) +
+        pad(d.mac || '-', 18) + (d.vendor || '-').slice(0, 28)));
     return lines.join('\n');
 }
 
@@ -139,17 +139,27 @@ function closeDevices() {
 }
 
 // Boîte de dialogue : liste rafraîchie toutes les 5 s tant qu'elle est ouverte.
+// Deux règles du thème rognent le tableau : .prompt-dialog impose width: 26em et
+// .dialog .dialog-content-box max-width: 28em. On retire donc la classe prompt-dialog à la
+// construction et celle du content box : le dialogue prend la largeur naturelle du tableau
+// (re-centré à chaque réallocation par le BinLayout du dialogue).
 function openDevices() {
     if (devDialog) return;
-    let d = devDialog = new ModalDialog.ModalDialog({ styleClass: 'prompt-dialog' });
+    let d = devDialog = new ModalDialog.ModalDialog();
+    d.contentLayout.remove_style_class_name('dialog-content-box');
+    d.contentLayout.set_style('margin-top: 8px; margin-bottom: 16px;'); // marges perdues avec la classe
     let content = new Dialog.MessageDialogContent({ title: "Appareils connectés" });
     let label = new St.Label({ text: 'Chargement…', style: 'font-family: monospace;' });
     label.clutter_text.line_wrap = false;
+    label.clutter_text.selectable = true; // sélection à la souris, comme du texte
+    label.reactive = true;
+    label.can_focus = true;
     content.add_child(label);
     d.contentLayout.add_child(content);
-    // Le thème plafonne .dialog-content-box à 28em (~400 px) : le tableau monospace serait rogné.
-    d.contentLayout.set_style('max-width: 64em;');
     d.setButtons([{ label: 'Fermer', action: closeDevices, key: Clutter.KEY_Escape }]);
+    d.setInitialKeyFocus(label); // sans focus, Clutter vide la sélection au moindre clic à côté
+    CinnamonEntry.addContextMenu(label); // clic droit → « Copier » (déjà utilisé par la boîte SSID)
+    if (label._menu && label._menu._pasteItem) label._menu._pasteItem.actor.hide(); // non éditable
     d.connect('closed', () => {
         if (devTimer) { GLib.source_remove(devTimer); devTimer = 0; }
         if (devDialog === d) devDialog = null;

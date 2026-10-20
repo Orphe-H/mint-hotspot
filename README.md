@@ -6,7 +6,7 @@ Une extension Cinnamon ajoute au menu Réseau :
 
 - un interrupteur « Point d'accès » ;
 - une ligne `SSID : … — Modifier…` qui ouvre une boîte de dialogue pour changer le SSID et le mot de passe (masqué, icône œil pour l'afficher) ;
-- une ligne `Appareils connectés (n)…` (visible seulement quand le point d'accès est allumé) qui ouvre la liste des appareils associés, rafraîchie toutes les 5 s.
+- une ligne `Appareils connectés (n)…` (visible seulement quand le point d'accès est allumé) qui ouvre la liste des appareils associés (colonnes nom, IP, durée, MAC, fabricant), rafraîchie toutes les 5 s ; le texte du tableau est sélectionnable (clic droit → « Copier »).
 
 ## Prérequis
 
@@ -38,7 +38,7 @@ Activez ensuite l'extension dans **Paramètres système > Extensions**.
 - **Voir les appareils connectés** : la ligne `Appareils connectés (n)…` dans le menu Réseau, ou en ligne de commande :
 
   ```bash
-  pkexec /usr/local/libexec/mint-hotspot list     # tableau : IP, MAC, durée, nom, fabricant
+  pkexec /usr/local/libexec/mint-hotspot list     # tableau : nom, IP, durée, MAC, fabricant
   pkexec /usr/local/libexec/mint-hotspot list -j  # même chose en JSON
   ```
 

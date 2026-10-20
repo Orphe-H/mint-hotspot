@@ -260,10 +260,10 @@ list() {
         done <<<"$sorted"
         printf ']\n'
     else
-        printf '%-15s %-17s %-8s %-18s %s\n' "IP" "MAC" "Durée" "Nom" "Fabricant"
+        printf '%-24s %-15s %-8s %-17s %s\n' "Nom" "IP" "Durée" "MAC" "Fabricant"
         while IFS='|' read -r ip mac sec host vend; do
             # nom et fabricant tronqués : le tableau reste aligné comme dans le dialogue de l'extension
-            printf '%-15s %-17s %-8s %-18.18s %.28s\n' "$ip" "$mac" "$(fmt_dur "$sec")" "$host" "$vend"
+            printf '%-24.24s %-15s %-8s %-17s %.28s\n' "$host" "$ip" "$(fmt_dur "$sec")" "$mac" "$vend"
         done <<<"$sorted"
     fi
 }

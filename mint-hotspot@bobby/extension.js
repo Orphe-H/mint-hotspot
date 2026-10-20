@@ -15,7 +15,7 @@ const AP = 'ap0';
 const HELPER = '/usr/local/libexec/mint-hotspot';
 
 let applet = null, client = null, clientSignals = [], timerId = 0, items = [], toggle = null, info = null;
-let devices = null, devDialog = null, devTimer = 0;
+let devices = null, devDialog = null, devTimer = 0, menuSignal = 0;
 let current = [], dialog = null, userAction = false;
 
 function run(argv, callback) {
@@ -106,7 +106,7 @@ function devicesText(list) {
     const lines = [pad('IP', 16) + pad('MAC', 18) + pad('Durée', 8) + pad('Nom', 19) + 'Fabricant'];
     list.forEach(d => lines.push(
         pad(d.ip || '-', 16) + pad(d.mac || '-', 18) + pad(fmtDur(d.seconds), 8) +
-        pad(d.hostname || '-', 19) + (d.vendor || '-')));
+        pad((d.hostname || '-').slice(0, 18), 19) + (d.vendor || '-').slice(0, 28)));
     return lines.join('\n');
 }
 
@@ -147,6 +147,8 @@ function openDevices() {
     label.clutter_text.line_wrap = false;
     content.add_child(label);
     d.contentLayout.add_child(content);
+    // Le thème plafonne .dialog-content-box à 28em (~400 px) : le tableau monospace serait rogné.
+    d.contentLayout.set_style('max-width: 64em;');
     d.setButtons([{ label: 'Fermer', action: closeDevices, key: Clutter.KEY_Escape }]);
     d.connect('closed', () => {
         if (devTimer) { GLib.source_remove(devTimer); devTimer = 0; }
@@ -204,6 +206,11 @@ function attach() {
         client.connect('active-connection-removed', activeRemoved),
     ];
     clientSignals.push(client.connect('device-added', hideAp)); // connecté après l'applet, donc appelé après lui
+    // Le compteur n'est juste qu'au moment de l'allumage (0 appareil) : on le recalcule
+    // à chaque ouverture du menu Réseau, quand il devient visible.
+    menuSignal = applet.menu.connect('open-state-changed', (menu, open) => {
+        if (open) refreshDevices(toggle.state);
+    });
     hideAp(client, client.get_device_by_iface(AP));
     refresh();
     return GLib.SOURCE_REMOVE;
@@ -222,6 +229,8 @@ function disable() {
     closeDevices();
     clientSignals.forEach(id => client.disconnect(id));
     clientSignals = [];
+    if (menuSignal && applet) applet.menu.disconnect(menuSignal);
+    menuSignal = 0;
     applet = client = null;
     items.forEach(item => item.destroy());
     items = [];

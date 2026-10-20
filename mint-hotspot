@@ -1,6 +1,7 @@
 #!/bin/bash
 # Point d'accès WiFi sur une interface virtuelle, sans couper la connexion WiFi en cours.
-# Lancé en root via pkexec : n'accepte que "up", "down" ou "check" (lecture seule, sans root), aucune autre entrée.
+# Lancé via pkexec : n'accepte que "up", "down", "check" ou "list" ; "check" et "list" sont en lecture seule
+# et fonctionnent sans root ("list" perd alors les noms d'hôte, dans les bails DHCP racine-only).
 CON=mint-hotspot
 AP=ap0
 IFB=mhifb
@@ -173,6 +174,99 @@ idle_start() {
     logger -t mint-hotspot "veille active : extinction après ${IDLE_TIMEOUT}s sans appareil connecté"
 }
 
+# Durée lisible à partir du "connected time" de iw (secondes) : 3h12m, 45m, 9s.
+fmt_dur() {
+    local s=${1:-0}
+    if [ "$s" -ge 3600 ]; then
+        printf '%dh%02dm' "$((s / 3600))" "$(((s % 3600) / 60))"
+    elif [ "$s" -ge 60 ]; then
+        printf '%dm' "$((s / 60))"
+    else
+        printf '%ds' "$s"
+    fi
+}
+
+# Fabricant : bloc "(hex)" du préfixe OUI (24 bits) dans la base IEEE locale.
+oui_name() {
+    local p=${1:0:8}
+    p=${p^^}
+    p=${p//:/-}
+    awk -v p="$p" '$1 == p && $2 == "(hex)" {
+        gsub(/\r/, "") # la base IEEE est en CRLF : sinon le \r finit dans la colonne / le JSON
+        for (i = 3; i <= NF; i++) printf "%s%s", $i, (i < NF ? " " : "")
+        print ""
+        exit
+    }' /usr/share/ieee-data/oui.txt 2>/dev/null
+}
+
+# Liste les appareils connectés : IP, MAC, durée d'association, nom d'hôte et fabricant.
+# iw et l'ARP se lisent sans root ; les bails dnsmasq de NetworkManager (IP + nom d'hôte) sont
+# racine-only, d'où le repli sur ip neigh (IP sans nom) quand la commande n'est pas lancée en root.
+list() {
+    local json=0 out rc ip mac sec host vend first=1 rows=() sorted
+    [ "${1:-}" = "-j" ] && json=1
+
+    out=$(iw dev "$AP" station dump 2>/dev/null); rc=$?
+    if [ "$rc" -ne 0 ]; then
+        if ! iw dev "$AP" info >/dev/null 2>&1; then
+            if [ "$json" = 1 ]; then echo '[]'; else echo "Le point d'accès est éteint" >&2; fi
+            return 0
+        fi
+        echo "Lecture des stations impossible sur $AP (droits insuffisants ?)" >&2
+        return 1
+    fi
+
+    # Bails DHCP : mac -> ip, mac -> nom d'hôte.
+    local -A ipmap=() hostmap=() f
+    for f in /var/lib/NetworkManager/dnsmasq-*.leases; do
+        [ -r "$f" ] || continue
+        while read -r _ mac ip host _; do
+            mac=${mac,,}
+            [ -n "$mac" ] || continue
+            ipmap[$mac]=$ip
+            [ "$host" != '*' ] && hostmap[$mac]=$host
+        done <"$f"
+    done
+
+    # ARP (lisible sans root) : ip -> mac, en secours pour les IP sans bail lisible.
+    local arp
+    arp=$(ip neigh show dev "$AP" 2>/dev/null |
+        awk '/lladdr/ {for (i = 1; i <= NF; i++) if ($i == "lladdr") {print $1, $(i + 1); break}}')
+    while read -r ip mac; do
+        mac=${mac,,}
+        [ -n "$mac" ] && [ -z "${ipmap[$mac]:-}" ] && ipmap[$mac]=$ip
+    done <<<"$arp"
+
+    while read -r mac sec; do
+        [ -n "$mac" ] || continue
+        vend=$(oui_name "$mac")
+        rows+=("${ipmap[$mac]:--}|$mac|${sec:-0}|${hostmap[$mac]:--}|$vend")
+    done < <(printf '%s\n' "$out" | awk '/^Station / {m = $2} /connected time:/ {print m, $3}')
+
+    if [ "${#rows[@]}" -eq 0 ]; then
+        if [ "$json" = 1 ]; then echo '[]'; else echo "Aucun appareil connecté"; fi
+        return 0
+    fi
+    sorted=$(printf '%s\n' "${rows[@]}" | sort -t'|' -k1,1V)
+
+    if [ "$json" = 1 ]; then
+        printf '['
+        while IFS='|' read -r ip mac sec host vend; do
+            [ "$first" = 1 ] || printf ','
+            first=0
+            # guillemets éventuels du nom d'hôte ou du fabricant : on les retire plutôt que d'échapper
+            printf '{"ip":"%s","mac":"%s","hostname":"%s","vendor":"%s","seconds":%s}' \
+                "${ip//\"/}" "$mac" "${host//\"/}" "${vend//\"/}" "$sec"
+        done <<<"$sorted"
+        printf ']\n'
+    else
+        printf '%-15s %-17s %-8s %-18s %s\n' "IP" "MAC" "Durée" "Nom" "Fabricant"
+        while IFS='|' read -r ip mac sec host vend; do
+            printf '%-15s %-17s %-8s %-18s %.28s\n' "$ip" "$mac" "$(fmt_dur "$sec")" "$host" "$vend"
+        done <<<"$sorted"
+    fi
+}
+
 case "${1:-}" in
 check)
     check && echo "OK : la carte WiFi $STA peut partager sa connexion"
@@ -222,8 +316,11 @@ down)
     ap_down
     exit 0
     ;;
+list)
+    list "${2:-}"
+    ;;
 *)
-    echo "usage: $0 up|down|check" >&2
+    echo "usage: $0 up|down|check|list [-j]" >&2
     exit 2
     ;;
 esac

@@ -5,7 +5,8 @@ Point d'accès WiFi pour Linux Mint (Cinnamon) **sans couper la connexion WiFi e
 Une extension Cinnamon ajoute au menu Réseau :
 
 - un interrupteur « Point d'accès » ;
-- une ligne `SSID : … — Modifier…` qui ouvre une boîte de dialogue pour changer le SSID et le mot de passe (masqué, icône œil pour l'afficher).
+- une ligne `SSID : … — Modifier…` qui ouvre une boîte de dialogue pour changer le SSID et le mot de passe (masqué, icône œil pour l'afficher) ;
+- une ligne `Appareils connectés (n)…` (visible seulement quand le point d'accès est allumé) qui ouvre la liste des appareils associés, rafraîchie toutes les 5 s.
 
 ## Prérequis
 
@@ -34,6 +35,14 @@ Activez ensuite l'extension dans **Paramètres système > Extensions**.
 - **Allumer / éteindre** : interrupteur « Point d'accès » dans le menu Réseau. Pas de mot de passe demandé pour la session active.
 - **Extinction automatique** : le point d'accès s'éteint après 2 minutes sans aucun appareil connecté, avec notification Cinnamon et entrée dans `journalctl -t mint-hotspot` (délai modifiable, voir plus bas).
 - **Modifier le SSID ou le mot de passe** : cliquer sur la ligne `SSID : …`. Elle apparaît après le premier allumage, qui crée la connexion. Le mot de passe doit faire 8 à 63 caractères. Si le point d'accès est allumé, il redémarre pour appliquer les changements.
+- **Voir les appareils connectés** : la ligne `Appareils connectés (n)…` dans le menu Réseau, ou en ligne de commande :
+
+  ```bash
+  pkexec /usr/local/libexec/mint-hotspot list     # tableau : IP, MAC, durée, nom, fabricant
+  pkexec /usr/local/libexec/mint-hotspot list -j  # même chose en JSON
+  ```
+
+  Sans `pkexec` la commande fonctionne aussi (lecture seule) mais perd les noms d'hôte, les bails DHCP étant détenus par root : les IP viennent alors de l'ARP.
 
 Au premier allumage, le SSID est `<nom-de-la-machine>-hotspot` et le mot de passe est généré aléatoirement.
 
@@ -64,13 +73,15 @@ IDLE_INTERVAL=5  # période de sonde des appareils connectés, s
 En ligne de commande :
 
 ```bash
-pkexec /usr/local/libexec/mint-hotspot up    # allumer
-pkexec /usr/local/libexec/mint-hotspot down  # éteindre
+pkexec /usr/local/libexec/mint-hotspot up      # allumer
+pkexec /usr/local/libexec/mint-hotspot down    # éteindre
+pkexec /usr/local/libexec/mint-hotspot list -j # appareils connectés (JSON)
 ```
 
 ## Fonctionnement
 
-- `mint-hotspot` (lancé en root via `pkexec`, n'accepte que `up`, `down` ou `check`) vérifie la carte, crée `ap0` avec une adresse MAC dérivée de la carte, puis active la connexion NetworkManager `mint-hotspot` (mode AP, WPA2, partage IPv4).
+- `mint-hotspot` (lancé en root via `pkexec`, n'accepte que `up`, `down`, `check` ou `list`) vérifie la carte, crée `ap0` avec une adresse MAC dérivée de la carte, puis active la connexion NetworkManager `mint-hotspot` (mode AP, WPA2, partage IPv4).
+- `list` croise les stations de `iw dev ap0 station dump` (MAC, durée d'association), les bails dnsmasq de NetworkManager (IP + nom d'hôte, en root), l'ARP en secours pour les IP, et la base OUI locale (`/usr/share/ieee-data/oui.txt`) pour le fabricant.
 - Le point d'accès prend le canal de la connexion WiFi en cours (bande 2,4 GHz). Si la box est en 5 GHz, il utilise le canal 6.
 - Tant qu'il est allumé, un shaper `tc` (HTB + fq_codel) plafonne le débit des appareils connectés dans les deux sens, avec réduction automatique selon la latence de l'ordinateur (voir « Limite de débit »). Le trafic de l'ordinateur lui-même n'est jamais limité.
 - Un daemon de veille compte les appareils associés (`iw dev ap0 station dump`) ; après `IDLE_TIMEOUT` s sans aucun, il éteint le point d'accès et notifie (journal + Cinnamon).

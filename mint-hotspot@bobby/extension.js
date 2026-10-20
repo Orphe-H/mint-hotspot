@@ -15,6 +15,7 @@ const AP = 'ap0';
 const HELPER = '/usr/local/libexec/mint-hotspot';
 
 let applet = null, client = null, clientSignals = [], timerId = 0, items = [], toggle = null, info = null;
+let devices = null, devDialog = null, devTimer = 0;
 let current = [], dialog = null, userAction = false;
 
 function run(argv, callback) {
@@ -35,8 +36,10 @@ function helper(arg) {
 
 function refresh() {
     if (!toggle) return;
-    toggle.setToggleState(client.get_active_connections().some(c => c.get_id() === CON));
+    let on = client.get_active_connections().some(c => c.get_id() === CON);
+    toggle.setToggleState(on);
     info.actor.hide();
+    refreshDevices(on);
     if (!client.get_connection_by_id(CON)) return; // créée au premier allumage
     // -e no : sans ça « : » et « \ » sont échappés ; pas de trim(), un mot de passe peut finir par un espace.
     run(['nmcli', '-e', 'no', '-s', '-g', '802-11-wireless.ssid,802-11-wireless-security.psk', 'con', 'show', CON], (ok, out) => {
@@ -88,6 +91,79 @@ function edit() {
     d.open();
 }
 
+// Durée lisible à partir du « connected time » de iw, donné en secondes par list -j.
+function fmtDur(s) {
+    s = Math.max(0, Math.floor(Number(s) || 0));
+    if (s >= 3600) return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`;
+    if (s >= 60) return `${Math.floor(s / 60)}m`;
+    return `${s}s`;
+}
+
+// Colonnes alignées en monospace, comme la sortie de « mint-hotspot list ».
+function devicesText(list) {
+    if (!list.length) return 'Aucun appareil connecté.';
+    const pad = (s, n) => s.padEnd(n);
+    const lines = [pad('IP', 16) + pad('MAC', 18) + pad('Durée', 8) + pad('Nom', 19) + 'Fabricant'];
+    list.forEach(d => lines.push(
+        pad(d.ip || '-', 16) + pad(d.mac || '-', 18) + pad(fmtDur(d.seconds), 8) +
+        pad(d.hostname || '-', 19) + (d.vendor || '-')));
+    return lines.join('\n');
+}
+
+// Les bails DHCP (nom d'hôte) sont racine-only : list passe par pkexec, autorisé sans mot de passe
+// par la règle polkit pour la session active.
+function listDevices(callback) {
+    run(['pkexec', HELPER, 'list', '-j'], (ok, out, err) => {
+        if (!ok) return callback(false, null, (err || '').trim());
+        try { callback(true, JSON.parse(out), ''); } catch (e) { callback(false, null, 'Réponse illisible'); }
+    });
+}
+
+// Intitulé avec le compteur, masqué quand le point d'accès est éteint.
+function refreshDevices(on) {
+    if (!devices) return;
+    devices.label.text = 'Appareils connectés';
+    if (!on) { devices.actor.hide(); return; }
+    devices.actor.show();
+    listDevices((ok, list) => {
+        if (!ok || !devices || !devices.actor.visible) return;
+        devices.label.text = `Appareils connectés (${list.length})`;
+    });
+}
+
+function closeDevices() {
+    let d = devDialog;
+    devDialog = null;
+    if (devTimer) { GLib.source_remove(devTimer); devTimer = 0; }
+    if (d) d.close();
+}
+
+// Boîte de dialogue : liste rafraîchie toutes les 5 s tant qu'elle est ouverte.
+function openDevices() {
+    if (devDialog) return;
+    let d = devDialog = new ModalDialog.ModalDialog({ styleClass: 'prompt-dialog' });
+    let content = new Dialog.MessageDialogContent({ title: "Appareils connectés" });
+    let label = new St.Label({ text: 'Chargement…', style: 'font-family: monospace;' });
+    label.clutter_text.line_wrap = false;
+    content.add_child(label);
+    d.contentLayout.add_child(content);
+    d.setButtons([{ label: 'Fermer', action: closeDevices, key: Clutter.KEY_Escape }]);
+    d.connect('closed', () => {
+        if (devTimer) { GLib.source_remove(devTimer); devTimer = 0; }
+        if (devDialog === d) devDialog = null;
+    });
+    let load = () => listDevices((ok, list, err) => {
+        if (devDialog !== d) return; // fermée ou extension désactivée entre-temps
+        label.text = ok ? devicesText(list) : (err || 'Lecture de la liste impossible');
+    });
+    load();
+    if (!d.open()) { // un autre dialogue modal est déjà ouvert : on ne reste pas bloqué
+        closeDevices();
+        return;
+    }
+    devTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => { load(); return GLib.SOURCE_CONTINUE; });
+}
+
 // L'applet affiche ap0 comme une deuxième carte WiFi (interrupteur + réseaux), ce qui permet de couper le point
 // d'accès ou de connecter ap0 à un réseau : on la retire avec son propre _deviceRemoved, qui remet _delegate à null.
 function hideAp(c, device) {
@@ -112,7 +188,8 @@ function attach() {
     client = applet._client;
     toggle = new PopupMenu.PopupSwitchMenuItem("Point d'accès", false);
     info = new PopupMenu.PopupMenuItem('');
-    items = [toggle, info, new PopupMenu.PopupSeparatorMenuItem()];
+    devices = new PopupMenu.PopupMenuItem('Appareils connectés');
+    items = [toggle, info, devices, new PopupMenu.PopupSeparatorMenuItem()];
     let pos = applet.menu.numMenuItems - 2; // avant « Paramètres réseau » et « Connexions réseau »
     items.forEach((item, i) => applet.menu.addMenuItem(item, pos + i));
 
@@ -121,6 +198,7 @@ function attach() {
         helper(state ? 'up' : 'down');
     });
     info.connect('activate', edit);
+    devices.connect('activate', openDevices);
     clientSignals = [
         client.connect('active-connection-added', refresh),
         client.connect('active-connection-removed', activeRemoved),
@@ -141,12 +219,14 @@ function disable() {
     if (timerId) GLib.source_remove(timerId);
     timerId = 0;
     closeDialog();
+    closeDevices();
     clientSignals.forEach(id => client.disconnect(id));
     clientSignals = [];
     applet = client = null;
     items.forEach(item => item.destroy());
     items = [];
-    toggle = info = null;
+    toggle = info = devices = null;
+    devDialog = null;
     current = [];
     userAction = false;
 }
